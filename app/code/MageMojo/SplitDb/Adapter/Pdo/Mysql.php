@@ -1,7 +1,5 @@
 <?php
-
 namespace MageMojo\SplitDb\Adapter\Pdo;
-
 use Magento\Framework\DB\Adapter\Pdo\Mysql as OriginalMysqlPdo;
 use Magento\Framework\App\ObjectManager;
 use Magento\Framework\DB\Adapter\AdapterInterface;
@@ -14,16 +12,12 @@ use Magento\Framework\DB\Adapter\DeadlockException;
 use Magento\Framework\DB\Adapter\DuplicateException;
 use Magento\Framework\DB\Profiler;
 use Zend_Db_Select;
-
 class Mysql extends OriginalMysqlPdo
 {
     const READ_ONLY_KEY = "readonly";
     const DEFAULT_DB_KEY = "default";
-
     const TRANSACTION = 64;
-
     private $exceptionMap;
-
     protected $_config = [];
     protected $_configRead = [];
     protected $_configWrite = [];
@@ -31,151 +25,124 @@ class Mysql extends OriginalMysqlPdo
     protected $_connectionRead;
     protected $_connectionWrite;
     protected $_readConnectExists;
-
     /**
      * Connect using a query SQL or a string to write or read the database.
      * @param mixed $sql
      * @throws \Exception
      * @throws \Zend_Db_Profiler_Exception
      */
-
     protected function _connect($sql = false)
     {
 
+        $state = ObjectManager::getInstance()->get('Magento\Framework\App\State');
         $isConnected = (bool) ($this->_connection);
-        $toIgnore = $this->_ignoreSQL($sql);
 
-        if($toIgnore && $this->isUsingWriteConnection()){
-            $sql = 'write';
-        }elseif($toIgnore && $this->isUsingReadConnection()){
-            $sql = 'read';
+        if (in_array($state->smartGetAreaCode(),array('frontend','none'))) {
+          $useReader = $this->useReader($sql);
+        } else {
+          $useReader = 0;
         }
 
-//        $this->_debug($sql);
+        if(!$isConnected) {
+          $db = ObjectManager::getInstance()->create(DeploymentConfig::class)->get('db');
+          $connections = $db['connection'];
+          if ($connections[self::READ_ONLY_KEY]) {
+            $this->setConfigRead($connections[self::READ_ONLY_KEY]);
+            $this->setReadConnectExists(true);
+          } else {
+            $this->setReadConnectExists(false);
+          }
+          if ($connections[self::DEFAULT_DB_KEY]) {
+            $this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
+          } else {
+            #throw
+          }
+        }
 
+        #$this->_debug($sql);
         if($this->_transactionLevel !== 0){
             if($this->isUsingReadConnection()){
                 $this->setConnection($this->_connectionWrite);
-                $this->getConnectionBySql('write');
+                $this->setConfig($this->getConfigWrite());
+                #$this->getConnectionBySql('write');
             }
             return;
         }
 
-        // Check if the forced mode is the same currently utilized
-        if($sql == 'write' && $this->isUsingReadConnection()){
-            $this->closeConnection();
-            $this->setConnection($this->_connectionWrite);
-            $this->getConnectionBySql('write');
-        }elseif($sql == 'read' && !$this->isUsingReadConnection()){
-            $this->closeConnection();
-            $this->setConnection($this->_connectionRead);
-            $this->getConnectionBySql('read');
-        }
-
         // Check if need to connect
         if($isConnected) {
-            if ($this->isSelect($sql) && !$this->isUsingReadConnection()) {
+            if (!$sql) {
+              return;
+            }
+            if ($useReader == 1 && !$this->isUsingReadConnection()) {
                 $this->setConnection($this->_connectionRead);
                 $this->setConfig($this->getConfigRead());
-                $this->getConnectionBySql('read');
-            } elseif (!$this->isSelect($sql) && $this->isUsingReadConnection()) {
+            } elseif ($useReader == 0 && !$this->isUsingWriteConnection()) {
                 $this->setConnection($this->_connectionWrite);
-                $this->getConnectionBySql('write');
-            } else {
-                return;
+                $this->setConfig($this->getConfigWrite());
             }
+            return;
         }
-
-        $this->getConnectionBySql($sql);
-
-
-        if ($this->isSelect($sql) && !$this->isUsingReadConnection()) {
-            $this->setConfig($this->getConfigRead());
-            $this->setConnection($this->_connectionRead);
-        } elseif (!$this->isSelect($sql) && $this->isUsingReadConnection()) {
-            $this->setConfig($this->getConfigWrite());
-            $this->setConnection($this->_connectionWrite);
-        }
-
 
         if (!extension_loaded('pdo_mysql')) {
             throw new \Exception('pdo_mysql extension is not installed');
         }
-
         if (!isset($this->_config['host'])) {
             throw new \Exception('No host configured to connect');
         }
-
         if (isset($this->_config['port'])) {
             throw new \Exception('Port must be configured within host parameter (like localhost:3306');
         }
-
         unset($this->_config['port']);
-
-
         if (strpos($this->_config['host'], '/') !== false) {
             $this->_config['unix_socket'] = $this->_config['host'];
             unset($this->_config['host']);
         } elseif (strpos($this->_config['host'], ':') !== false) {
             list($this->_config['host'], $this->_config['port']) = explode(':', $this->_config['host']);
         }
-
         if (!isset($this->_config['driver_options'][\PDO::MYSQL_ATTR_MULTI_STATEMENTS])) {
             $this->_config['driver_options'][\PDO::MYSQL_ATTR_MULTI_STATEMENTS] = false;
         }
-
         $this->logger->startTimer();
-
         if (!empty($this->_config['charset'])
             && version_compare(PHP_VERSION, '5.3.6', '<')
         ) {
             $initCommand = "SET NAMES '" . $this->_config['charset'] . "'";
             $this->_config['driver_options'][1002] = $initCommand; // 1002 = PDO::MYSQL_ATTR_INIT_COMMAND
         }
-
         // get the dsn first, because some adapters alter the $_pdoType
         $dsn = $this->_dsn($sql);
-
         // check for PDO extension
         if (!extension_loaded('pdo')) {
             throw new \Exception(
                 'The PDO extension is required for this adapter but the extension is not loaded'
             );
         }
-
         // check the PDO driver is available
         if (!in_array($this->_pdoType, \PDO::getAvailableDrivers())) {
             throw new \Exception('The ' . $this->_pdoType . ' driver is not currently installed');
         }
-
         // create PDO connection
         $q = $this->_profiler->queryStart('connect', \Zend_Db_Profiler::CONNECT);
-
         // add the persistence flag if we find it in our config array
         if (isset($this->_config['persistent']) && ($this->_config['persistent'] == true)) {
             $this->_config['driver_options'][\PDO::ATTR_PERSISTENT] = true;
-            if($this->getReadConnectExists() == 2){
+            if($this->getReadConnectExists()){
                 $this->_configWrite['driver_options'][\PDO::ATTR_PERSISTENT] = true;
                 $this->_configRead['driver_options'][\PDO::ATTR_PERSISTENT] = true;
             }
         }
-
         try {
-
             $configDefault = $this->getConfig();
-
             $this->_connection = new \PDO(
                 $dsn,
                 $configDefault['username'],
                 $configDefault['password'],
                 $configDefault['driver_options']
             );
-
-            if($this->getReadConnectExists() == 2){
-
+            if($this->getReadConnectExists()){
                 $configRead = $this->getConfigRead();
                 $configWrite = $this->getConfigWrite();
-
                 $this->_connectionRead = new \PDO(
                     $this->_dsn('read'),
                     $configRead['username'],
@@ -188,75 +155,63 @@ class Mysql extends OriginalMysqlPdo
                     $configWrite['password'],
                     $configDefault['driver_options']
                 );
-
-
-                if($this->isSelect($sql)){
+                if($useReader){
                     $this->_connection = $this->_connectionRead;
                 }else{
                     $this->_connection = $this->_connectionWrite;
                 }
-
             }
-
             $this->_profiler->queryEnd($q);
-
             // set the PDO connection to perform case-folding on array keys, or not
             $this->_connection->setAttribute(\PDO::ATTR_CASE, $this->_caseFolding);
-            if($this->getReadConnectExists() == 2) {
+            if($this->getReadConnectExists()) {
                 $this->_connectionRead->setAttribute(\PDO::ATTR_CASE, $this->_caseFolding);
                 $this->_connectionWrite->setAttribute(\PDO::ATTR_CASE, $this->_caseFolding);
             }
-
             // always use exceptions.
             $this->_connection->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-            if($this->getReadConnectExists() == 2 ) {
+            if($this->getReadConnectExists()) {
                 $this->_connectionRead->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
                 $this->_connectionWrite->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
             }
-
         } catch (\PDOException $e) {
             throw new \Exception($e->getMessage(), $e->getCode(), $e);
         }
-
         $this->logger->logStats(LoggerInterface::TYPE_CONNECT, '');
-
         /** @link http://bugs.mysql.com/bug.php?id=18551 */
         $this->_connection->query("SET SQL_MODE=''");
-        if($this->getReadConnectExists() == 2) {
+        if($this->getReadConnectExists()) {
             $this->_connectionRead->query("SET SQL_MODE=''");
             $this->_connectionWrite->query("SET SQL_MODE=''");
         }
-
         // As we use default value CURRENT_TIMESTAMP for TIMESTAMP type columns we need to set GMT timezone
         $this->_connection->query("SET time_zone = '+00:00'");
-        if($this->getReadConnectExists() == 2) {
+        if($this->getReadConnectExists()) {
             $this->_connectionRead->query("SET time_zone = '+00:00'");
             $this->_connectionWrite->query("SET time_zone = '+00:00'");
         }
-
         if (isset($this->_config['initStatements'])) {
             $statements = $this->_splitMultiQuery($this->_config['initStatements']);
             foreach ($statements as $statement) {
                 $this->_query($statement);
             }
         }
-
         if (!$this->_connectionFlagsSet) {
             $this->_connection->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
-            if($this->getReadConnectExists() == 2) {
+            if($this->getReadConnectExists()) {
                 $this->_connectionRead->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
                 $this->_connectionWrite->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
             }
             if (isset($this->_config['use_buffered_query']) && $this->_config['use_buffered_query'] === false) {
                 $this->_connection->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
-                if($this->getReadConnectExists() == 2) {
+                if($this->getReadConnectExists()) {
                     $this->_connectionRead->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
                     $this->_connectionWrite->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY,
                         false);
                 }
             } else {
                 $this->_connection->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
-                if($this->getReadConnectExists() == 2) {
+                if($this->getReadConnectExists()) {
                     $this->_connectionRead->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
                     $this->_connectionWrite->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
                 }
@@ -264,7 +219,6 @@ class Mysql extends OriginalMysqlPdo
             $this->_connectionFlagsSet = true;
         }
     }
-
     protected function _debug($sql){
         if($sql !== false) {
             if ($this->isSelect($sql)) {
@@ -285,14 +239,16 @@ class Mysql extends OriginalMysqlPdo
             }
         }
     }
-
     protected function _dsn($sql='write')
     {
         // baseline of DSN parts
         $dsn = $this->_config;
-
-        $dsnCustomConfig = $this->isSelect($sql) ? $this->_configRead : $this->_configWrite;
-
+        if ($sql == 'write') {
+          $dsnCustomConfig = $this->_configWrite;
+        } else {
+          $dsnCustomConfig = $this->_configRead;
+        }
+        #$dsnCustomConfig = $read ? $this->_configRead : $this->_configWrite;
         // don't pass the username, password, charset, persistent and driver_options in the DSN
         unset($dsnCustomConfig['username']);
         unset($dsnCustomConfig['password']);
@@ -300,19 +256,16 @@ class Mysql extends OriginalMysqlPdo
         unset($dsn['charset']);
         unset($dsn['persistent']);
         unset($dsn['driver_options']);
-
         // use all remaining parts in the DSN
         foreach ($dsn as $key => $val) {
             $dsn[$key] = "$key=$val";
         }
-
         $dsn = $this->_pdoType . ':' . implode(';', $dsn);
         if (isset($this->_config['charset'])) {
             $dsn .= ';charset=' . $this->_config['charset'];
         }
         return $dsn;
     }
-
     /**
      * Update from Select using Write connection
      * @param Select $select
@@ -324,125 +277,6 @@ class Mysql extends OriginalMysqlPdo
         $this->_connect('write');
         return parent::updateFromSelect($select, $table);
     }
-
-
-    /**
-     * Load custom readonly connection on env.php
-     * @param Select|string|boolean $sql
-     * @return void
-     * @throws \Zend_Db_Adapter_Exception
-     * @throws \Zend_Db_Statement_Exception
-     */
-    private function getConnectionBySql($sql)
-    {
-        if($this->getReadConnectExists() == null) {
-            $db = ObjectManager::getInstance()->create(DeploymentConfig::class)->get('db');
-            $connections = $db['connection'];
-            $readConnectExists = array_key_exists(self::READ_ONLY_KEY, $connections) ? 2 : 1;
-
-            $this->setConfigRead($connections[self::READ_ONLY_KEY]);
-            $this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
-
-            $this->setReadConnectExists($readConnectExists);
-
-
-        }elseif ($this->getReadConnectExists() == 2) {
-
-            $isSelect = (bool)$this->isSelect($sql);
-
-            if (($isSelect || $sql === 'read') && !$this->isUsingReadConnection()) {
-                $this->closeConnection();
-                $this->setConnection($this->_connectionRead);
-            } elseif ((!$isSelect || $sql === 'write') && !$this->isUsingWriteConnection()) {
-                $this->closeConnection();
-                $this->setConnection($this->_connectionWrite);
-            }
-        }else{
-            parent::_connect();
-        }
-    }
-
-    /**
-     * Check if the SQL query needs to be ignored or not
-     * @param $sql
-     * @return bool
-     */
-    protected function _ignoreSQL($sql){
-
-        $ignoreTempQueries = ['eav_attribute', '_tmp_'];
-
-        $toIgnore = ((strpos(substr($sql, 0, 10), 'SET NAMES') !== false) || $sql == false);
-
-        if(!$toIgnore && $this->isSelect($sql)){
-            $usingTempTable =  (isset($_SESSION['tempTables']) && $_SESSION['tempTables'] !== false);
-            if($usingTempTable){
-                foreach ($ignoreTempQueries as $query){
-                    if(strpos($sql, $query) !== false){
-//                        $this->_debug($sql);
-                        $toIgnore = true;
-                    };
-                }
-            }
-        }
-
-        return $toIgnore;
-    }
-
-    /**
-     * Validate SQL query
-     * @param $sql
-     * @return bool
-     */
-    private function isSelect($sql)
-    {
-
-        $hasSelect = (bool) (
-            (strpos(substr($sql, 0, 10), 'SELECT `') !== false)
-//            || (strpos(substr($sql, 0, 10), 'SELECT @@') !== false)
-        );
-        $tmpTable = (bool)(
-            (strpos($sql, 'tmp') !== false)
-            || (strpos($sql, 'temp') !== false)
-        );
-        $toIgnore = (
-            (strpos(substr($sql, 0, 10), 'SET NAMES') !== false)
-            || $sql == false);
-        $writeQueries = ['INSERT','UPDATE','DELETE','CREATE','DROP', 'RENAME', 'SELECT @@'];
-
-        if($this->isUsingReadConnection() && $toIgnore) {
-            return true;
-        }elseif ($this->isUsingWriteConnection() && $toIgnore ){
-            return false;
-        }
-
-        if($tmpTable){
-            $_SESSION['tempTables'] = true;
-            if(!$hasSelect) {
-                return false;
-            }
-        }
-
-        if ($sql instanceof Select) {
-            $sql = (string) $sql->assemble();
-        }
-
-        if(is_string($sql)) {
-
-            foreach ($writeQueries as $query) {
-                if (strpos(strtoupper($sql), $query) !== false) {
-                    return false;
-                }
-            }
-            if ($hasSelect || $sql == 'read') {
-                return true;
-            }
-        }
-
-
-        return false;
-
-    }
-
     /**
      * Begin the transaction using Write Connection
      * @return $this
@@ -450,7 +284,6 @@ class Mysql extends OriginalMysqlPdo
      */
     public function beginTransaction()
     {
-
         if ($this->_isRolledBack) {
             throw new \Exception(AdapterInterface::ERROR_ROLLBACK_INCOMPLETE_MESSAGE);
         }
@@ -465,7 +298,6 @@ class Mysql extends OriginalMysqlPdo
         ++$this->_transactionLevel;
         return $this;
     }
-
     /**
      * Use commit method using Write Connection
      * @return $this
@@ -488,7 +320,6 @@ class Mysql extends OriginalMysqlPdo
         --$this->_transactionLevel;
         return $this;
     }
-
     /**
      * Rollback using Write Connection
      * @return $this
@@ -512,7 +343,6 @@ class Mysql extends OriginalMysqlPdo
         --$this->_transactionLevel;
         return $this;
     }
-
     /**
      * @throws \Exception
      */
@@ -521,7 +351,6 @@ class Mysql extends OriginalMysqlPdo
         $this->_connect('write');
         $this->_connection->beginTransaction();
     }
-
     /**
      * @throws \Exception
      */
@@ -530,7 +359,6 @@ class Mysql extends OriginalMysqlPdo
         $this->_connect('write');
         $this->_connection->commit();
     }
-
     /**
      * @throws \Exception
      */
@@ -538,7 +366,6 @@ class Mysql extends OriginalMysqlPdo
         $this->_connect('write');
         $this->_connectionWrite->rollBack();
     }
-
     /**
      * Rewrite original mysql pdo to use another database in select queries
      * @param Select|string $sql
@@ -561,9 +388,7 @@ class Mysql extends OriginalMysqlPdo
             // SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry
             1062 => DuplicateException::class,
         ];
-
         $this->getConnectionBySql($sql);
-
         $connectionErrors = [
             2006, // SQLSTATE[HY000]: General error: 2006 MySQL server has gone away
             2013,  // SQLSTATE[HY000]: General error: 2013 Lost connection to MySQL server during query
@@ -585,7 +410,6 @@ class Mysql extends OriginalMysqlPdo
                     /** @var Profiler $profiler */
                     $profiler->queryEndLast();
                 }
-
                 /** @var $pdoException \PDOException */
                 $pdoException = null;
                 if ($e instanceof \PDOException) {
@@ -595,7 +419,6 @@ class Mysql extends OriginalMysqlPdo
                 ) {
                     $pdoException = $e->getPrevious();
                 }
-
                 // Check to reconnect
                 if ($pdoException && $triesCount < self::MAX_CONNECTION_RETRIES
                     && in_array($pdoException->errorInfo[1], $connectionErrors)
@@ -605,7 +428,6 @@ class Mysql extends OriginalMysqlPdo
                     $this->closeConnection();
                     $this->_connect($sql);
                 }
-
                 if (!$retry) {
                     $this->logger->logStats(LoggerInterface::TYPE_QUERY, $sql, $bind);
                     $this->logger->critical($e);
@@ -621,24 +443,19 @@ class Mysql extends OriginalMysqlPdo
             }
         } while ($retry);
     }
-
     /**
      * Check if it is using the Read Connection
      * @return bool
      */
     private function isUsingReadConnection(){
-
-        if($this->getReadConnectExists() == 2){
-
+        if($this->getReadConnectExists()){
             $configRead = $this->getConfigRead();
             $configDefault = $this->getConfig();
-
             if(count($configDefault) > 0) {
                 $isSameHost = (bool)($configDefault['host'] === $configRead['host']);
                 $isSameDb = (bool)($configDefault['dbname'] === $configRead['dbname']);
                 $isSamePassword = (bool)($configDefault['password'] === $configRead['password']);
                 $isSameUsername = (bool)($configDefault['username'] === $configRead['username']);
-
                 if($isSameDb && $isSameHost && $isSamePassword && $isSameUsername){
                     return true;
                 }
@@ -646,22 +463,19 @@ class Mysql extends OriginalMysqlPdo
         }
         return false;
     }
-
     /**
      * Check if it is using the Write Connection
      * @return bool
      */
     private function isUsingWriteConnection(){
-        if($this->getReadConnectExists() == 2) {
+        if($this->getReadConnectExists()) {
             $configWrite = $this->getConfigWrite();
             $configDefault = $this->getConfig();
-
             if(count($configDefault) > 0) {
                 $isSameHost = (bool)($configDefault['host'] === $configWrite['host']);
                 $isSameDb = (bool)($configDefault['dbname'] === $configWrite['dbname']);
                 $isSamePassword = (bool)($configDefault['password'] === $configWrite['password']);
                 $isSameUsername = (bool)($configDefault['username'] === $configWrite['username']);
-
                 if ($isSameDb && $isSameHost && $isSamePassword && $isSameUsername) {
                     return true;
                 }
@@ -669,7 +483,6 @@ class Mysql extends OriginalMysqlPdo
         }
         return false;
     }
-
     /**
      * Method magento/zendframework1/library/Zend/Db/Adapter/Abstract
      * @param $sql
@@ -680,26 +493,20 @@ class Mysql extends OriginalMysqlPdo
     private function abstractAdapterQuery($sql, $bind = array())
     {
         $this->_connect($sql);
-
         if ($sql instanceof \Zend_Db_Select) {
             if (empty($bind)) {
                 $bind = $sql->getBind();
             }
-
             $sql = $sql->assemble();
         }
-
         if (!is_array($bind)) {
             $bind = array($bind);
         }
-
         $stmt = $this->prepare($sql);
         $stmt->execute($bind);
-
         $stmt->setFetchMode($this->_fetchMode);
         return $stmt;
     }
-
     /**
      * Method from magento/framework/DB/Adapter/Pdo/Mysql
      * @param $sql
@@ -709,14 +516,10 @@ class Mysql extends OriginalMysqlPdo
      */
     private function pdoAbstractQuery($sql, $bind = array())
     {
-
-
         $this->_connect($sql);
-
         if (empty($bind) && $sql instanceof \Zend_Db_Select) {
             $bind = $sql->getBind();
         }
-
         if (is_array($bind)) {
             foreach ($bind as $name => $value) {
                 if (!is_int($name) && !preg_match('/^:/', $name)) {
@@ -726,7 +529,6 @@ class Mysql extends OriginalMysqlPdo
                 }
             }
         }
-
         try {
             return $this->abstractAdapterQuery($sql, $bind);
         } catch (\PDOException $e) {
@@ -736,7 +538,6 @@ class Mysql extends OriginalMysqlPdo
             throw new \Zend_Db_Statement_Exception($e->getMessage(), $e->getCode(), $e);
         }
     }
-
     /**
      * Prepares and executes an SQL statement with bound data.
      *
@@ -749,33 +550,29 @@ class Mysql extends OriginalMysqlPdo
      */
     public function query($sql, $bind = array())
     {
+        $sql = str_replace('USER_PRIVILEGES','INFORMATION_SCHEMA.USER_PRIVILEGES',$sql);
+        $sql = str_replace('SCHEMA_PRIVILEGES','INFORMATION_SCHEMA.SCHEMA_PRIVILEGES',$sql);
         $this->_connect($sql);
-
         // is the $sql a Zend_Db_Select object?
         if ($sql instanceof Zend_Db_Select) {
             if (empty($bind)) {
                 $bind = $sql->getBind();
             }
-
             $sql = $sql->assemble();
         }
-
         // make sure $bind to an array;
         // don't use (array) typecasting because
         // because $bind may be a Zend_Db_Expr object
         if (!is_array($bind)) {
             $bind = array($bind);
         }
-
         // prepare and execute the statement with profiling
         $stmt = $this->prepare($sql);
         $stmt->execute($bind);
-
         // return the results embedded in the prepared statement object
         $stmt->setFetchMode($this->_fetchMode);
         return $stmt;
     }
-
     /**
      * Insert in table
      * @param mixed $table
@@ -788,7 +585,6 @@ class Mysql extends OriginalMysqlPdo
     public function insert($table, array $bind)
     {
         $this->_connect('write');
-
         $cols = array();
         $vals = array();
         $i = 0;
@@ -814,24 +610,19 @@ class Mysql extends OriginalMysqlPdo
                 }
             }
         }
-
         // build the statement
         $sql = "INSERT INTO "
             . $this->quoteIdentifier($table, true)
             . ' (' . implode(', ', $cols) . ') '
             . 'VALUES (' . implode(', ', $vals) . ')';
-
         // execute the statement and return the number of affected rows
         if ($this->supportsParameters('positional')) {
             $bind = array_values($bind);
         }
-
         $stmt = $this->query($sql, $bind);
         $result = $stmt->rowCount();
         return $result;
     }
-
-
     /**
      * Execute a Delete query
      * @param mixed $table
@@ -843,16 +634,13 @@ class Mysql extends OriginalMysqlPdo
     public function delete($table, $where = '')
     {
         $this->getConnectionBySql('write');
-
         $where = $this->_whereExpr($where);
-
         /**
          * Build the DELETE statement
          */
         $sql = "DELETE FROM "
             . $this->quoteIdentifier($table, true)
             . (($where) ? " WHERE $where" : '');
-
         /**
          * Execute the statement and return the number of affected rows
          */
@@ -860,7 +648,6 @@ class Mysql extends OriginalMysqlPdo
         $result = $stmt->rowCount();
         return $result;
     }
-
     /**
      * Get the configuration read the database
      * @return mixed
@@ -869,7 +656,6 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_configRead;
     }
-
     /**
      * Set configuration just to read the database
      * @param mixed $configRead
@@ -878,10 +664,8 @@ class Mysql extends OriginalMysqlPdo
     public function setConfigRead($configRead)
     {
         $this->_configRead = $configRead;
-
         return $this->_configRead;
     }
-
     /**
      * Get the configuration write and read the database
      * @return mixed
@@ -890,7 +674,6 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_configWrite;
     }
-
     /**
      * Set configuration to write/read the database
      * @param mixed $configWrite
@@ -899,10 +682,8 @@ class Mysql extends OriginalMysqlPdo
     public function setConfigWrite($configWrite)
     {
         $this->_configWrite = $configWrite;
-
         return $this->_configWrite;
     }
-
     /**
      * Get the current config to write or / and read the database
      * @return mixed
@@ -911,7 +692,6 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_config;
     }
-
     /**
      * Set the default configuration to use the database
      * @param mixed $config
@@ -920,10 +700,8 @@ class Mysql extends OriginalMysqlPdo
     public function setConfig($config)
     {
         $this->_config = $config;
-
         return $this->_config;
     }
-
     /**
      * Check if the secondary connection exists
      * @return mixed
@@ -932,7 +710,6 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_readConnectExists;
     }
-
     /**
      * Set the secondary connection status
      * @param bool
@@ -942,18 +719,74 @@ class Mysql extends OriginalMysqlPdo
     {
         $this->_readConnectExists = $readConnectExists;
     }
-
     /**
      * @return array
      */
     public function getConnection(){
         return $this->_connection;
     }
-
     /**
      * @param array $connection
      */
     public function setConnection($connection){
         $this->_connection = $connection;
     }
+
+    public function truncateTable($tableName, $schemaName = null)
+    {
+        if (!$this->isTableExists($tableName, $schemaName)) {
+            throw new \Zend_Db_Exception(sprintf('Table "%s" does not exist', $tableName));
+        }
+        $table = $this->quoteIdentifier($this->_getTableName($tableName, $schemaName));
+        $query = 'DELETE FROM ' . $table;
+        $this->query($query);
+        $query = 'ALTER TABLE '.$table.' AUTO_INCREMENT = 1';
+        $this->query($query);
+        return $this;
+    }
+
+    public function useReader($sql) {
+      $return = 0;
+      $sql = strtolower($sql);
+      $exclusions = array('_tmp','setup_module');
+      if (substr($sql,0,6) == 'select') {
+        $return = 1;
+        foreach ($exclusions as $exclusion) {
+          if (strpos($sql,$exclusion) > -1) {
+            $return = 0;
+          }
+        }
+      }
+      return $return;
+    }
+    /**
+     * Load custom readonly connection on env.php
+     * @param Select|string|boolean $sql
+     * @return void
+     * @throws \Zend_Db_Adapter_Exception
+     * @throws \Zend_Db_Statement_Exception
+     */
+    private function getConnectionBySql($sql)
+    {
+        if($this->getReadConnectExists() == null) {
+            $db = ObjectManager::getInstance()->create(DeploymentConfig::class)->get('db');
+            $connections = $db['connection'];
+            $readConnectExists = array_key_exists(self::READ_ONLY_KEY, $connections) ? 2 : 1;
+            $this->setConfigRead($connections[self::READ_ONLY_KEY]);
+            $this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
+            $this->setReadConnectExists($readConnectExists);
+        }elseif ($this->getReadConnectExists()) {
+            $useReader = $this->useReader($sql);
+            if (($useReader == 1) && !$this->isUsingReadConnection()) {
+                $this->closeConnection();
+                $this->setConnection($this->_connectionRead);
+            } elseif (($useReader == 0) && !$this->isUsingWriteConnection()) {
+                $this->closeConnection();
+                $this->setConnection($this->_connectionWrite);
+            }
+        }else{
+            parent::_connect();
+        }
+    }
+
 }
