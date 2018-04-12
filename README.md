@@ -41,6 +41,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
     ),
   ),
+  'resource' =>
+  array (
+    'default_setup' =>
+    array (
+      'connection' => 'default',
+    ),
+    'readonly' =>
+    array (
+      'connection' => 'readonly',
+    ),
+  ),
+
 ```
 
 - Run these commands in your terminal:
