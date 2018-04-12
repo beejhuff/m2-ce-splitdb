@@ -33,10 +33,6 @@ class Mysql extends OriginalMysqlPdo
      */
     protected function _connect($sql = false)
     {
-        #$db = ObjectManager::getInstance()->create(DeploymentConfig::class)->get('db');
-        #$connections = $db['connection'];
-        #$this->setConfigRead($connections[self::READ_ONLY_KEY]);
-        #$this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
 
         $state = ObjectManager::getInstance()->get('Magento\Framework\App\State');
         $isConnected = (bool) ($this->_connection);
@@ -50,8 +46,17 @@ class Mysql extends OriginalMysqlPdo
         if(!$isConnected) {
           $db = ObjectManager::getInstance()->create(DeploymentConfig::class)->get('db');
           $connections = $db['connection'];
-          $this->setConfigRead($connections[self::READ_ONLY_KEY]);
-          $this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
+          if ($connections[self::READ_ONLY_KEY]) {
+            $this->setConfigRead($connections[self::READ_ONLY_KEY]);
+            $this->setReadConnectExists(true);
+          } else {
+            $this->setReadConnectExists(false);
+          }
+          if ($connections[self::DEFAULT_DB_KEY]) {
+            $this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
+          } else {
+            #throw
+          }
         }
 
         #$this->_debug($sql);
@@ -63,17 +68,12 @@ class Mysql extends OriginalMysqlPdo
             }
             return;
         }
-        // Check if the forced mode is the same currently utilized
-        if($useReader == 0 and !$this->isUsingWriteConnection()){
-            $this->setConnection($this->_connectionWrite);
-            $this->setConfig($this->getConfigWrite());
-        }elseif($useReader == 1 && !$this->isUsingReadConnection()){
-            $this->setConnection($this->_connectionRead);
-            $this->setConfig($this->getConfigRead());
-        }
 
         // Check if need to connect
         if($isConnected) {
+            if (!$sql) {
+              return;
+            }
             if ($useReader == 1 && !$this->isUsingReadConnection()) {
                 $this->setConnection($this->_connectionRead);
                 $this->setConfig($this->getConfigRead());
@@ -127,7 +127,7 @@ class Mysql extends OriginalMysqlPdo
         // add the persistence flag if we find it in our config array
         if (isset($this->_config['persistent']) && ($this->_config['persistent'] == true)) {
             $this->_config['driver_options'][\PDO::ATTR_PERSISTENT] = true;
-            if($this->getReadConnectExists() == 2){
+            if($this->getReadConnectExists()){
                 $this->_configWrite['driver_options'][\PDO::ATTR_PERSISTENT] = true;
                 $this->_configRead['driver_options'][\PDO::ATTR_PERSISTENT] = true;
             }
@@ -140,7 +140,7 @@ class Mysql extends OriginalMysqlPdo
                 $configDefault['password'],
                 $configDefault['driver_options']
             );
-            if($this->getReadConnectExists() == 2){
+            if($this->getReadConnectExists()){
                 $configRead = $this->getConfigRead();
                 $configWrite = $this->getConfigWrite();
                 $this->_connectionRead = new \PDO(
@@ -164,13 +164,13 @@ class Mysql extends OriginalMysqlPdo
             $this->_profiler->queryEnd($q);
             // set the PDO connection to perform case-folding on array keys, or not
             $this->_connection->setAttribute(\PDO::ATTR_CASE, $this->_caseFolding);
-            if($this->getReadConnectExists() == 2) {
+            if($this->getReadConnectExists()) {
                 $this->_connectionRead->setAttribute(\PDO::ATTR_CASE, $this->_caseFolding);
                 $this->_connectionWrite->setAttribute(\PDO::ATTR_CASE, $this->_caseFolding);
             }
             // always use exceptions.
             $this->_connection->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-            if($this->getReadConnectExists() == 2 ) {
+            if($this->getReadConnectExists()) {
                 $this->_connectionRead->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
                 $this->_connectionWrite->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
             }
@@ -180,13 +180,13 @@ class Mysql extends OriginalMysqlPdo
         $this->logger->logStats(LoggerInterface::TYPE_CONNECT, '');
         /** @link http://bugs.mysql.com/bug.php?id=18551 */
         $this->_connection->query("SET SQL_MODE=''");
-        if($this->getReadConnectExists() == 2) {
+        if($this->getReadConnectExists()) {
             $this->_connectionRead->query("SET SQL_MODE=''");
             $this->_connectionWrite->query("SET SQL_MODE=''");
         }
         // As we use default value CURRENT_TIMESTAMP for TIMESTAMP type columns we need to set GMT timezone
         $this->_connection->query("SET time_zone = '+00:00'");
-        if($this->getReadConnectExists() == 2) {
+        if($this->getReadConnectExists()) {
             $this->_connectionRead->query("SET time_zone = '+00:00'");
             $this->_connectionWrite->query("SET time_zone = '+00:00'");
         }
@@ -198,22 +198,20 @@ class Mysql extends OriginalMysqlPdo
         }
         if (!$this->_connectionFlagsSet) {
             $this->_connection->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
-            if($useReader == 1) {
-            #if($this->getReadConnectExists() == 2) {
+            if($this->getReadConnectExists()) {
                 $this->_connectionRead->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
                 $this->_connectionWrite->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
             }
             if (isset($this->_config['use_buffered_query']) && $this->_config['use_buffered_query'] === false) {
                 $this->_connection->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
-                if($this->getReadConnectExists() == 2) {
+                if($this->getReadConnectExists()) {
                     $this->_connectionRead->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
                     $this->_connectionWrite->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY,
                         false);
                 }
             } else {
                 $this->_connection->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
-                if($useReader == 1) {
-                #if($this->getReadConnectExists() == 2) {
+                if($this->getReadConnectExists()) {
                     $this->_connectionRead->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
                     $this->_connectionWrite->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
                 }
@@ -245,8 +243,12 @@ class Mysql extends OriginalMysqlPdo
     {
         // baseline of DSN parts
         $dsn = $this->_config;
-        $useReader = $this->useReader($sql);
-        $dsnCustomConfig = $useReader ? $this->_configRead : $this->_configWrite;
+        if ($sql == 'write') {
+          $dsnCustomConfig = $this->_configWrite;
+        } else {
+          $dsnCustomConfig = $this->_configRead;
+        }
+        #$dsnCustomConfig = $read ? $this->_configRead : $this->_configWrite;
         // don't pass the username, password, charset, persistent and driver_options in the DSN
         unset($dsnCustomConfig['username']);
         unset($dsnCustomConfig['password']);
@@ -446,7 +448,7 @@ class Mysql extends OriginalMysqlPdo
      * @return bool
      */
     private function isUsingReadConnection(){
-        if($this->getReadConnectExists() == 2){
+        if($this->getReadConnectExists()){
             $configRead = $this->getConfigRead();
             $configDefault = $this->getConfig();
             if(count($configDefault) > 0) {
@@ -466,7 +468,7 @@ class Mysql extends OriginalMysqlPdo
      * @return bool
      */
     private function isUsingWriteConnection(){
-        if($this->getReadConnectExists() == 2) {
+        if($this->getReadConnectExists()) {
             $configWrite = $this->getConfigWrite();
             $configDefault = $this->getConfig();
             if(count($configDefault) > 0) {
@@ -730,13 +732,7 @@ class Mysql extends OriginalMysqlPdo
         $this->_connection = $connection;
     }
 
-    /**
-     * Overwrite truncate command to do delete from to avoid mysql bug locks
-     * @param string $tableName
-     * @param string $schemaName
-     * @return object
-     */
-     public function truncateTable($tableName, $schemaName = null)
+    public function truncateTable($tableName, $schemaName = null)
     {
         if (!$this->isTableExists($tableName, $schemaName)) {
             throw new \Zend_Db_Exception(sprintf('Table "%s" does not exist', $tableName));
@@ -749,15 +745,10 @@ class Mysql extends OriginalMysqlPdo
         return $this;
     }
 
-    /**
-     * Check if the query is a select and is eligible for read only
-     * @param Select|string|boolean $sql
-     * @return bool
-     */
-     public function useReader($sql) {
+    public function useReader($sql) {
       $return = 0;
       $sql = strtolower($sql);
-      $exclusions = array('eav_attribute', '_tmp_','setup_module');
+      $exclusions = array('_tmp','setup_module');
       if (substr($sql,0,6) == 'select') {
         $return = 1;
         foreach ($exclusions as $exclusion) {
@@ -784,7 +775,7 @@ class Mysql extends OriginalMysqlPdo
             $this->setConfigRead($connections[self::READ_ONLY_KEY]);
             $this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
             $this->setReadConnectExists($readConnectExists);
-        }elseif ($this->getReadConnectExists() == 2) {
+        }elseif ($this->getReadConnectExists()) {
             $useReader = $this->useReader($sql);
             if (($useReader == 1) && !$this->isUsingReadConnection()) {
                 $this->closeConnection();
@@ -799,4 +790,3 @@ class Mysql extends OriginalMysqlPdo
     }
 
 }
-
