@@ -33,11 +33,14 @@ class Mysql extends OriginalMysqlPdo
      */
     protected function _connect($sql = false)
     {
+        #$db = ObjectManager::getInstance()->create(DeploymentConfig::class)->get('db');
+        #$connections = $db['connection'];
+        #$this->setConfigRead($connections[self::READ_ONLY_KEY]);
+        #$this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
 
         $state = ObjectManager::getInstance()->get('Magento\Framework\App\State');
         $isConnected = (bool) ($this->_connection);
 
-		// Only use the reader on frontend calls, cuts down on potential edge cases
         if (in_array($state->smartGetAreaCode(),array('frontend','none'))) {
           $useReader = $this->useReader($sql);
         } else {
@@ -77,9 +80,8 @@ class Mysql extends OriginalMysqlPdo
             } elseif ($useReader == 0 && !$this->isUsingWriteConnection()) {
                 $this->setConnection($this->_connectionWrite);
                 $this->setConfig($this->getConfigWrite());
-            } else {
-                return;
             }
+            return;
         }
 
         if (!extension_loaded('pdo_mysql')) {
@@ -184,7 +186,7 @@ class Mysql extends OriginalMysqlPdo
         }
         // As we use default value CURRENT_TIMESTAMP for TIMESTAMP type columns we need to set GMT timezone
         $this->_connection->query("SET time_zone = '+00:00'");
-        if($useReader == 1) {
+        if($this->getReadConnectExists() == 2) {
             $this->_connectionRead->query("SET time_zone = '+00:00'");
             $this->_connectionWrite->query("SET time_zone = '+00:00'");
         }
@@ -197,6 +199,7 @@ class Mysql extends OriginalMysqlPdo
         if (!$this->_connectionFlagsSet) {
             $this->_connection->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
             if($useReader == 1) {
+            #if($this->getReadConnectExists() == 2) {
                 $this->_connectionRead->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
                 $this->_connectionWrite->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
             }
@@ -209,7 +212,8 @@ class Mysql extends OriginalMysqlPdo
                 }
             } else {
                 $this->_connection->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
-                if($this->getReadConnectExists() == 2) {
+                if($useReader == 1) {
+                #if($this->getReadConnectExists() == 2) {
                     $this->_connectionRead->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
                     $this->_connectionWrite->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
                 }
@@ -544,6 +548,8 @@ class Mysql extends OriginalMysqlPdo
      */
     public function query($sql, $bind = array())
     {
+        $sql = str_replace('USER_PRIVILEGES','INFORMATION_SCHEMA.USER_PRIVILEGES',$sql);
+        $sql = str_replace('SCHEMA_PRIVILEGES','INFORMATION_SCHEMA.SCHEMA_PRIVILEGES',$sql);
         $this->_connect($sql);
         // is the $sql a Zend_Db_Select object?
         if ($sql instanceof Zend_Db_Select) {
@@ -724,7 +730,13 @@ class Mysql extends OriginalMysqlPdo
         $this->_connection = $connection;
     }
 
-    public function truncateTable($tableName, $schemaName = null)
+    /**
+     * Overwrite truncate command to do delete from to avoid mysql bug locks
+     * @param string $tableName
+     * @param string $schemaName
+     * @return object
+     */
+     public function truncateTable($tableName, $schemaName = null)
     {
         if (!$this->isTableExists($tableName, $schemaName)) {
             throw new \Zend_Db_Exception(sprintf('Table "%s" does not exist', $tableName));
@@ -737,10 +749,15 @@ class Mysql extends OriginalMysqlPdo
         return $this;
     }
 
-    public function useReader($sql) {
+    /**
+     * Check if the query is a select and is eligible for read only
+     * @param Select|string|boolean $sql
+     * @return bool
+     */
+     public function useReader($sql) {
       $return = 0;
       $sql = strtolower($sql);
-      $exclusions = array('eav_attribute', '_tmp_');
+      $exclusions = array('eav_attribute', '_tmp_','setup_module');
       if (substr($sql,0,6) == 'select') {
         $return = 1;
         foreach ($exclusions as $exclusion) {
@@ -782,3 +799,4 @@ class Mysql extends OriginalMysqlPdo
     }
 
 }
+
