@@ -64,7 +64,6 @@ class Mysql extends OriginalMysqlPdo
             if($this->isUsingReadConnection()){
                 $this->setConnection($this->_connectionWrite);
                 $this->setConfig($this->getConfigWrite());
-                #$this->getConnectionBySql('write');
             }
             return;
         }
@@ -266,106 +265,7 @@ class Mysql extends OriginalMysqlPdo
         }
         return $dsn;
     }
-    /**
-     * Update from Select using Write connection
-     * @param Select $select
-     * @param array|string $table
-     * @return string
-     * @throws \Exception
-     */
-    public function updateFromSelect(Select $select, $table){
-        $this->_connect('write');
-        return parent::updateFromSelect($select, $table);
-    }
-    /**
-     * Begin the transaction using Write Connection
-     * @return $this
-     * @throws \Exception
-     */
-    public function beginTransaction()
-    {
-        if ($this->_isRolledBack) {
-            throw new \Exception(AdapterInterface::ERROR_ROLLBACK_INCOMPLETE_MESSAGE);
-        }
-        if ($this->_transactionLevel === 0) {
-            $this->logger->startTimer();
-            $this->_connect('write');
-            $q = $this->_profiler->queryStart('begin', self::TRANSACTION);
-            $this->_beginTransaction();
-            $this->_profiler->queryEnd($q);
-            $this->logger->logStats(LoggerInterface::TYPE_TRANSACTION, 'BEGIN');
-        }
-        ++$this->_transactionLevel;
-        return $this;
-    }
-    /**
-     * Use commit method using Write Connection
-     * @return $this
-     * @throws \Exception
-     */
-    public function commit()
-    {
-        if ($this->_transactionLevel === 1 && !$this->_isRolledBack) {
-            $this->logger->startTimer();
-            $this->_connect('write');
-            $q = $this->_profiler->queryStart('commit', self::TRANSACTION);
-            $this->_commit();
-            $this->_profiler->queryEnd($q);
-            $this->logger->logStats(LoggerInterface::TYPE_TRANSACTION, 'COMMIT');
-        } elseif ($this->_transactionLevel === 0) {
-            throw new \Exception(AdapterInterface::ERROR_ASYMMETRIC_COMMIT_MESSAGE);
-        } elseif ($this->_isRolledBack) {
-            throw new \Exception(AdapterInterface::ERROR_ROLLBACK_INCOMPLETE_MESSAGE);
-        }
-        --$this->_transactionLevel;
-        return $this;
-    }
-    /**
-     * Rollback using Write Connection
-     * @return $this
-     * @throws \Exception
-     */
-    public function rollBack()
-    {
-        if ($this->_transactionLevel === 1) {
-            $this->logger->startTimer();
-            $this->_connect('write');
-            $q = $this->_profiler->queryStart('rollback', self::TRANSACTION);
-            $this->_rollBack();
-            $this->_profiler->queryEnd($q);
-            $this->_isRolledBack = false;
-            $this->logger->logStats(LoggerInterface::TYPE_TRANSACTION, 'ROLLBACK');
-        } elseif ($this->_transactionLevel === 0) {
-            throw new \Exception(AdapterInterface::ERROR_ASYMMETRIC_ROLLBACK_MESSAGE);
-        } else {
-            $this->_isRolledBack = true;
-        }
-        --$this->_transactionLevel;
-        return $this;
-    }
-    /**
-     * @throws \Exception
-     */
-    protected function _beginTransaction()
-    {
-        $this->_connect('write');
-        $this->_connection->beginTransaction();
-    }
-    /**
-     * @throws \Exception
-     */
-    protected function _commit()
-    {
-        $this->_connect('write');
-        $this->_connection->commit();
-    }
-    /**
-     * @throws \Exception
-     */
-    protected function _rollBack() {
-        $this->_connect('write');
-        $this->_connectionWrite->rollBack();
-    }
+
     /**
      * Rewrite original mysql pdo to use another database in select queries
      * @param Select|string $sql
@@ -388,7 +288,7 @@ class Mysql extends OriginalMysqlPdo
             // SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry
             1062 => DuplicateException::class,
         ];
-        $this->getConnectionBySql($sql);
+        $this->_connect($sql);
         $connectionErrors = [
             2006, // SQLSTATE[HY000]: General error: 2006 MySQL server has gone away
             2013,  // SQLSTATE[HY000]: General error: 2013 Lost connection to MySQL server during query
@@ -443,6 +343,7 @@ class Mysql extends OriginalMysqlPdo
             }
         } while ($retry);
     }
+
     /**
      * Check if it is using the Read Connection
      * @return bool
@@ -483,6 +384,7 @@ class Mysql extends OriginalMysqlPdo
         }
         return false;
     }
+
     /**
      * Method magento/zendframework1/library/Zend/Db/Adapter/Abstract
      * @param $sql
@@ -507,6 +409,7 @@ class Mysql extends OriginalMysqlPdo
         $stmt->setFetchMode($this->_fetchMode);
         return $stmt;
     }
+
     /**
      * Method from magento/framework/DB/Adapter/Pdo/Mysql
      * @param $sql
@@ -538,6 +441,7 @@ class Mysql extends OriginalMysqlPdo
             throw new \Zend_Db_Statement_Exception($e->getMessage(), $e->getCode(), $e);
         }
     }
+
     /**
      * Prepares and executes an SQL statement with bound data.
      *
@@ -573,81 +477,7 @@ class Mysql extends OriginalMysqlPdo
         $stmt->setFetchMode($this->_fetchMode);
         return $stmt;
     }
-    /**
-     * Insert in table
-     * @param mixed $table
-     * @param array $bind
-     * @return int
-     * @throws \Exception
-     * @throws \Zend_Db_Adapter_Exception
-     * @throws \Zend_Db_Profiler_Exception
-     */
-    public function insert($table, array $bind)
-    {
-        $this->_connect('write');
-        $cols = array();
-        $vals = array();
-        $i = 0;
-        foreach ($bind as $col => $val) {
-            $cols[] = $this->quoteIdentifier($col, true);
-            if ($val instanceof \Zend_Db_Expr) {
-                $vals[] = $val->__toString();
-                unset($bind[$col]);
-            } else {
-                if ($this->supportsParameters('positional')) {
-                    $vals[] = '?';
-                } else {
-                    if ($this->supportsParameters('named')) {
-                        unset($bind[$col]);
-                        $bind[':col'.$i] = $val;
-                        $vals[] = ':col'.$i;
-                        $i++;
-                    } else {
-                        /** @see Zend_Db_Adapter_Exception */
-                        #require_once 'Zend/Db/Adapter/Exception.php';
-                        throw new \Zend_Db_Adapter_Exception(get_class($this) ." doesn't support positional or named binding");
-                    }
-                }
-            }
-        }
-        // build the statement
-        $sql = "INSERT INTO "
-            . $this->quoteIdentifier($table, true)
-            . ' (' . implode(', ', $cols) . ') '
-            . 'VALUES (' . implode(', ', $vals) . ')';
-        // execute the statement and return the number of affected rows
-        if ($this->supportsParameters('positional')) {
-            $bind = array_values($bind);
-        }
-        $stmt = $this->query($sql, $bind);
-        $result = $stmt->rowCount();
-        return $result;
-    }
-    /**
-     * Execute a Delete query
-     * @param mixed $table
-     * @param string $where
-     * @return int
-     * @throws \Exception
-     * @throws \Zend_Db_Profiler_Exception
-     */
-    public function delete($table, $where = '')
-    {
-        $this->getConnectionBySql('write');
-        $where = $this->_whereExpr($where);
-        /**
-         * Build the DELETE statement
-         */
-        $sql = "DELETE FROM "
-            . $this->quoteIdentifier($table, true)
-            . (($where) ? " WHERE $where" : '');
-        /**
-         * Execute the statement and return the number of affected rows
-         */
-        $stmt = $this->query($sql);
-        $result = $stmt->rowCount();
-        return $result;
-    }
+
     /**
      * Get the configuration read the database
      * @return mixed
@@ -656,6 +486,7 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_configRead;
     }
+
     /**
      * Set configuration just to read the database
      * @param mixed $configRead
@@ -666,6 +497,7 @@ class Mysql extends OriginalMysqlPdo
         $this->_configRead = $configRead;
         return $this->_configRead;
     }
+
     /**
      * Get the configuration write and read the database
      * @return mixed
@@ -674,6 +506,7 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_configWrite;
     }
+
     /**
      * Set configuration to write/read the database
      * @param mixed $configWrite
@@ -684,6 +517,7 @@ class Mysql extends OriginalMysqlPdo
         $this->_configWrite = $configWrite;
         return $this->_configWrite;
     }
+
     /**
      * Get the current config to write or / and read the database
      * @return mixed
@@ -692,6 +526,7 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_config;
     }
+
     /**
      * Set the default configuration to use the database
      * @param mixed $config
@@ -702,6 +537,7 @@ class Mysql extends OriginalMysqlPdo
         $this->_config = $config;
         return $this->_config;
     }
+
     /**
      * Check if the secondary connection exists
      * @return mixed
@@ -710,6 +546,7 @@ class Mysql extends OriginalMysqlPdo
     {
         return $this->_readConnectExists;
     }
+
     /**
      * Set the secondary connection status
      * @param bool
@@ -719,12 +556,14 @@ class Mysql extends OriginalMysqlPdo
     {
         $this->_readConnectExists = $readConnectExists;
     }
+
     /**
      * @return array
      */
     public function getConnection(){
         return $this->_connection;
     }
+
     /**
      * @param array $connection
      */
@@ -759,34 +598,4 @@ class Mysql extends OriginalMysqlPdo
       }
       return $return;
     }
-    /**
-     * Load custom readonly connection on env.php
-     * @param Select|string|boolean $sql
-     * @return void
-     * @throws \Zend_Db_Adapter_Exception
-     * @throws \Zend_Db_Statement_Exception
-     */
-    private function getConnectionBySql($sql)
-    {
-        if($this->getReadConnectExists() == null) {
-            $db = ObjectManager::getInstance()->create(DeploymentConfig::class)->get('db');
-            $connections = $db['connection'];
-            $readConnectExists = array_key_exists(self::READ_ONLY_KEY, $connections) ? 2 : 1;
-            $this->setConfigRead($connections[self::READ_ONLY_KEY]);
-            $this->setConfigWrite($connections[self::DEFAULT_DB_KEY]);
-            $this->setReadConnectExists($readConnectExists);
-        }elseif ($this->getReadConnectExists()) {
-            $useReader = $this->useReader($sql);
-            if (($useReader == 1) && !$this->isUsingReadConnection()) {
-                $this->closeConnection();
-                $this->setConnection($this->_connectionRead);
-            } elseif (($useReader == 0) && !$this->isUsingWriteConnection()) {
-                $this->closeConnection();
-                $this->setConnection($this->_connectionWrite);
-            }
-        }else{
-            parent::_connect();
-        }
-    }
-
 }
